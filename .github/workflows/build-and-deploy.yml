@@ -1,0 +1,44 @@
+name: Sync From Backend
+
+on:
+  # Позволяет запускать этот workflow вручную или через API (из бэкенд-репозитория)
+  workflow_dispatch:
+
+jobs:
+  sync-directory:
+    runs-on: ubuntu-latest
+    steps:
+      # 1. Получаем код фронтенд-репозитория
+      - name: Checkout Frontend Repo
+        uses: actions/checkout@v4
+        with:
+          # Используем PAT, чтобы иметь право делать git push в этот же репозиторий
+          token: ${{ secrets.BACKEND_ACCESS_TOKEN }}
+
+      # 2. Клонируем бэкенд-репозиторий во временную папку 'temp-backend'
+      - name: Clone Backend Repo
+        run: |
+          git clone https://${{ secrets.BACKEND_ACCESS_TOKEN }}@github.com/nikrr4000/back-project.git temp-backend
+          # 👆 Замените YOUR_USERNAME/BACKEND_REPO_NAME на путь к вашему бэкенд-репозиторию
+
+      # 3. Синхронизируем нужную директорию с помощью rsync
+      - name: Sync Directory from Backend
+        run: |
+          rsync -av --delete temp-backend/src/config ./src/config
+          # 👆 Замените PATH_TO_BACKEND_DIR (например, src/api/types)
+          # 👆 и PATH_TO_FRONTEND_DIR (например, src/shared-types)
+
+      # 4. Проверяем наличие изменений, делаем коммит и пуш
+      - name: Commit and Push Changes
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore(sync): Update files from backend repository"
+          # Сообщение коммита, которое будет создано
+
+          commit_user_name: "GitHub Actions Bot"
+          commit_user_email: "github-actions[bot]@users.noreply.github.com"
+          commit_author: "GitHub Actions Bot <github-actions[bot]@users.noreply.github.com>"
+
+          # Добавляем [skip ci] в конец сообщения, чтобы этот коммит не запускал другие Actions
+          # и не создавал бесконечный цикл, если у вас есть workflow на push.
+          commit_options: '--no-verify --signoff -m "[skip ci]"'
