@@ -24,9 +24,11 @@ jobs:
       # 3. Синхронизируем нужную директорию с помощью rsync
       - name: Sync Directory from Backend
         run: |
-          rsync -av --delete temp-backend/src/config src/config
-          # 👆 Замените PATH_TO_BACKEND_DIR (например, src/api/types)
-          # 👆 и PATH_TO_FRONTEND_DIR (например, src/shared-types)
+          # Создаем директорию назначения, включая все родительские
+          mkdir -p src/config
+
+          # Синхронизируем СОДЕРЖИМОЕ папки config из бэкенда в папку config фронтенда
+          rsync -av --delete temp-backend/src/config/ src/config/
 
       # 4. Проверяем наличие изменений, делаем коммит и пуш
       - name: Commit and Push Changes
