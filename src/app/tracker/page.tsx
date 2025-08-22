@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 
 export default function TrackerPage() {
   const [queue, setQueue] = useState('');
@@ -47,7 +48,11 @@ export default function TrackerPage() {
         </div>
         <ul className="list-disc pl-5">
           {issues.map((it: any) => (
-            <li key={it.id || it.key}>{it.key}: {it.summary}</li>
+            <li key={it.id || it.key}>
+              <Link href={`/tracker/${it.key}`} className="text-blue-600 underline">
+                {it.key}: {it.summary}
+              </Link>
+            </li>
           ))}
         </ul>
       </section>
