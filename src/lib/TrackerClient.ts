@@ -2,7 +2,7 @@
 // A production-grade TypeScript client for Yandex Tracker API v3
 // Docs (selected):
 // - Access & headers: https://yandex.ru/support/tracker/ru/concepts/access
-// - Issues search: POST /v3/issues/_search
+// - Issues search: POST /v3/issues/_search (exactly one of: queue | keys | filter | query)
 // - Issues CRUD: GET/POST/PATCH /v3/issues, GET /v3/issues/{key}
 // - Transitions: POST /v3/issues/{issue}/transitions/{transition}/_execute
 // - Comments: GET/POST/PATCH/DELETE /v3/issues/{issue}/comments
@@ -107,9 +107,13 @@ export type FetchFn = (
 
 export interface TrackerClientOptions {
   baseUrl: string;
-  oauthToken: string;
-  orgId?: string;
-  cloudOrgId?: string;
+  // Provide exactly ONE of the tokens below
+  oauthToken?: string; // Authorization: OAuth ...
+  iamToken?: string; // Authorization: Bearer ... (requires Cloud Org)
+  // Provide exactly ONE org id for OAuth, and MANDATORY cloudOrgId for IAM
+  orgId?: string; // X-Org-ID (Yandex 360)
+  cloudOrgId?: string; // X-Cloud-Org-ID (Yandex Cloud)
+
   defaultHeaders?: Record<string, string>;
   timeoutMs?: number; // default 30000
   retries?: number; // default 3
@@ -264,9 +268,6 @@ export interface RequestOptions {
 
 export class TrackerClient {
   private baseUrl: string;
-  private oauthToken: string;
-  private orgId?: string;
-  private cloudOrgId?: string;
   private defaultHeaders: Record<string, string>;
   private timeoutMs: number;
   private retries: number;
@@ -277,13 +278,28 @@ export class TrackerClient {
   private enableCache: boolean;
   private cache: TTLCache<any>;
 
+  private authHeader: Record<string, string>;
+  private orgHeader: Record<string, string>;
+
   constructor(opts: TrackerClientOptions) {
     if (!opts || !opts.baseUrl) throw new TypeError("baseUrl is required");
-    if (!opts.oauthToken) throw new TypeError("oauthToken is required");
+
+    // Validate token/org pairs per spec:
+    // - IAM (Bearer) requires cloudOrgId
+    // - OAuth allows either orgId or cloudOrgId
+    if (!opts.oauthToken && !opts.iamToken) {
+      throw new TypeError("Provide oauthToken or iamToken");
+    }
+    if (opts.iamToken && !opts.cloudOrgId) {
+      throw new TypeError("iamToken requires cloudOrgId (X-Cloud-Org-ID)");
+    }
+    if (opts.oauthToken && !opts.orgId && !opts.cloudOrgId) {
+      throw new TypeError(
+        "oauthToken requires orgId (X-Org-ID) or cloudOrgId (X-Cloud-Org-ID)"
+      );
+    }
+
     this.baseUrl = opts.baseUrl.replace(/\/$/, "");
-    this.oauthToken = opts.oauthToken;
-    this.orgId = opts.orgId;
-    this.cloudOrgId = opts.cloudOrgId;
     this.defaultHeaders = opts.defaultHeaders ?? {};
     this.timeoutMs = opts.timeoutMs ?? 30000;
     this.retries = opts.retries ?? 3;
@@ -295,6 +311,17 @@ export class TrackerClient {
       throw new Error("fetch is not available. Provide fetchFn option");
     this.enableCache = !!opts.enableCache;
     this.cache = new TTLCache(opts.cacheTtlMs ?? 10000);
+
+    // Build auth/org headers (prefer IAM if both provided)
+    if (opts.iamToken) {
+      this.authHeader = { Authorization: `Bearer ${opts.iamToken}` };
+      this.orgHeader = { "X-Cloud-Org-ID": String(opts.cloudOrgId) };
+    } else {
+      this.authHeader = { Authorization: `OAuth ${opts.oauthToken}` };
+      this.orgHeader = opts.cloudOrgId
+        ? { "X-Cloud-Org-ID": String(opts.cloudOrgId) }
+        : { "X-Org-ID": String(opts.orgId) };
+    }
   }
 
   // ---------- Low-level request ----------
@@ -313,6 +340,7 @@ export class TrackerClient {
   ): Promise<T> {
     const requestId = randomUUID();
     const url = buildURL(this.baseUrl, path, query);
+
     const isForm = typeof FormData !== "undefined" && body instanceof FormData;
     const isJSON =
       body &&
@@ -321,23 +349,22 @@ export class TrackerClient {
       !(body instanceof ArrayBuffer) &&
       !(body instanceof Uint8Array);
 
-    const authHeader = { Authorization: `OAuth ${this.oauthToken}` };
-    const orgHeaders = this.orgHeaders();
     const baseHeaders = {
       Accept: "application/json",
       "X-Request-Id": requestId,
       ...(!isForm && isJSON ? { "Content-Type": "application/json" } : {}),
-    } satisfies Record<string, string>;
+    } as Record<string, string>;
 
+    // Merge order: base → org → auth → default → per-request
     const allHeaders = mergeHeaders(
-      this.defaultHeaders,
       baseHeaders,
-      orgHeaders,
-      authHeader,
+      this.orgHeader,
+      this.authHeader,
+      this.defaultHeaders,
       headers
     );
-    const cacheKey = this.buildCacheKey(method, url, allHeaders);
 
+    const cacheKey = this.buildCacheKey(method, url, allHeaders);
     if (this.enableCache && method.toUpperCase() === "GET") {
       const cached = this.cache.get(cacheKey);
       if (cached !== undefined) {
@@ -595,7 +622,6 @@ export class TrackerClient {
     let remaining = typeof maxItems === "number" ? maxItems : Infinity;
     let nextPage = page;
     let nextCursor = cursor;
-    // eslint-disable-next-line no-constant-condition
     while (true) {
       const {
         items,
@@ -670,27 +696,132 @@ export class TrackerClient {
   }
 
   // ---- Issues ----
+  /**
+   * Search issues. IMPORTANT: per /v3/issues/_search rules, the body must contain EXACTLY ONE of: { queue } | { keys } | { filter } | { query }.
+   * For convenience, use one of the dedicated helpers below, or pass only one of these fields in opts.
+   * Allowed query params: perPage, page, scrollId, fields, expand (for _search only: 'attachments' or 'transitions').
+   */
   searchIssues(
     opts: {
-      filter?: Record<string, any>;
-      query?: string;
+      queue?: string; // one of
+      keys?: string[]; // one of
+      filter?: Record<string, any>; // one of
+      query?: string; // one of
       fields?: string | string[];
-      expand?: string | string[];
+      expand?:
+        | "attachments"
+        | "transitions"
+        | Array<"attachments" | "transitions">;
       order?: string;
       pagination?: PaginationOpts;
     } = {}
   ): Promise<any> {
-    const { filter, query, fields, expand, order, pagination } = opts;
+    const { queue, keys, filter, query, fields, expand, order, pagination } =
+      opts;
+    const provided = [
+      queue != null,
+      Array.isArray(keys) && keys.length > 0,
+      !!filter,
+      typeof query === "string" && query.length > 0,
+    ].filter(Boolean).length;
+    if (provided === 0)
+      throw new TypeError(
+        "Provide exactly one of queue | keys | filter | query"
+      );
+    if (provided > 1)
+      throw new TypeError("Use only one of queue | keys | filter | query");
+
     const q = {
       perPage: pagination?.perPage,
       page: pagination?.page,
       scrollId: pagination?.scrollId,
-      expand: Array.isArray(expand) ? expand.join(",") : expand,
       fields: Array.isArray(fields) ? fields.join(",") : fields,
-    };
-    const body = { filter, query, order };
+      expand: Array.isArray(expand) ? expand.join(",") : expand,
+    } as Record<string, any>;
+
+    // _search allows only these expand values; drop anything else to avoid 400
+    if (q.expand) {
+      const allowed = new Set(["attachments", "transitions"]);
+      q.expand = String(q.expand)
+        .split(",")
+        .map((s) => s.trim())
+        .filter((s) => allowed.has(s))
+        .join(",");
+      if (!q.expand) delete q.expand;
+    }
+
+    const body: any = order ? { order } : {};
+    if (queue) body.queue = queue;
+    else if (keys && keys.length) body.keys = keys;
+    else if (filter) body.filter = filter;
+    else if (query) body.query = query;
+
     return this.request("POST", "/v3/issues/_search", { query: q, body });
   }
+
+  searchIssuesByQueue(
+    queue: string,
+    opts: {
+      fields?: string | string[];
+      expand?:
+        | "attachments"
+        | "transitions"
+        | Array<"attachments" | "transitions">;
+      order?: string;
+      pagination?: PaginationOpts;
+    } = {}
+  ) {
+    assertString("queue", queue);
+    return this.searchIssues({ queue, ...opts });
+  }
+  searchIssuesByKeys(
+    keys: string[],
+    opts: {
+      fields?: string | string[];
+      expand?:
+        | "attachments"
+        | "transitions"
+        | Array<"attachments" | "transitions">;
+      order?: string;
+      pagination?: PaginationOpts;
+    } = {}
+  ) {
+    if (!Array.isArray(keys) || keys.length === 0)
+      throw new TypeError("keys must be non-empty array");
+    return this.searchIssues({ keys, ...opts });
+  }
+  searchIssuesByFilter(
+    filter: Record<string, any>,
+    opts: {
+      fields?: string | string[];
+      expand?:
+        | "attachments"
+        | "transitions"
+        | Array<"attachments" | "transitions">;
+      order?: string;
+      pagination?: PaginationOpts;
+    } = {}
+  ) {
+    if (!filter || typeof filter !== "object")
+      throw new TypeError("filter must be an object");
+    return this.searchIssues({ filter, ...opts });
+  }
+  searchIssuesByQuery(
+    query: string,
+    opts: {
+      fields?: string | string[];
+      expand?:
+        | "attachments"
+        | "transitions"
+        | Array<"attachments" | "transitions">;
+      order?: string;
+      pagination?: PaginationOpts;
+    } = {}
+  ) {
+    assertString("query", query);
+    return this.searchIssues({ query, ...opts });
+  }
+
   getIssues(opts: Parameters<TrackerClient["searchIssues"]>[0]) {
     return this.searchIssues(opts);
   }
@@ -704,8 +835,6 @@ export class TrackerClient {
       fields: Array.isArray(opts.fields) ? opts.fields.join(",") : opts.fields,
       expand: Array.isArray(opts.expand) ? opts.expand.join(",") : opts.expand,
     };
-    console.log(q);
-
     return this.request("GET", `/v3/issues/${encodeURIComponent(issueKey)}`, {
       query: q,
     });
@@ -815,7 +944,7 @@ export class TrackerClient {
       else if (typeof file === "string")
         data = new Blob([file], { type: opts?.mimeType || "text/plain" });
     }
-    // @ts-ignore Node18 undici FormData supports (name, blob, filename)
+    // @ts-ignore undici FormData supports (name, blob, filename)
     (fd as any).append("file", data, opts.filename);
     return this.request(
       "POST",
@@ -837,9 +966,12 @@ export class TrackerClient {
       this.baseUrl,
       `/v3/issues/${encodeURIComponent(issueKey)}/attachments/${id}${namePart}`
     );
-    const headers = mergeHeaders(this.defaultHeaders, this.orgHeaders(), {
-      Authorization: `OAuth ${this.oauthToken}`,
-    });
+    const headers = mergeHeaders(
+      { Accept: "application/octet-stream" },
+      this.orgHeader,
+      this.authHeader,
+      this.defaultHeaders
+    );
     const res = await this.fetchFn(url as any, { method: "GET", headers });
     if (!res.ok) {
       const details = await parseJSONSafe(res);
@@ -1075,44 +1207,35 @@ export default TrackerClient;
 /* ------------------------- USAGE EXAMPLES -------------------------
 import TrackerClient from './TrackerClient.js';
 
-const client = new TrackerClient({
+// OAuth + Yandex 360 org
+const client1 = new TrackerClient({
   baseUrl: 'https://api.tracker.yandex.net',
-  oauthToken: process.env.TRACKER_TOKEN!,
-  orgId: process.env.TRACKER_ORG_ID,
-  retries: 3,
-  retryBaseDelayMs: 400,
-  enableCache: true,
-  cacheTtlMs: 5000,
+  oauthToken: process.env.TRACKER_OAUTH_TOKEN!,
+  orgId: process.env.TRACKER_ORG_ID!,
 });
 
-const me = await client.getMyself();
-console.log('Hello,', me.display);
-
-const issue = await client.createIssue({
-  queue: { key: 'TEST' },
-  summary: 'Demo from API',
-  description: 'Hello from TrackerClient',
-  type: { key: 'task' },
+// OAuth + Cloud org
+const client2 = new TrackerClient({
+  baseUrl: 'https://api.tracker.yandex.net',
+  oauthToken: process.env.TRACKER_OAUTH_TOKEN!,
+  cloudOrgId: process.env.TRACKER_CLOUD_ORG_ID!,
 });
 
-await client.transitionIssue(issue.key!, 'start_progress');
+// IAM + Cloud org (preferred for services)
+const client3 = new TrackerClient({
+  baseUrl: 'https://api.tracker.yandex.net',
+  iamToken: process.env.TRACKER_IAM_TOKEN!,
+  cloudOrgId: process.env.TRACKER_CLOUD_ORG_ID!,
+});
 
-const fetchPage = async ({ limit, cursor }: { limit?: number; cursor?: string }) => {
-  const perPage = limit ?? 50;
-  const resp = await client.searchIssues({
-    filter: { queue: 'TEST' },
-    pagination: { perPage, scrollId: cursor },
-    fields: ['summary', 'status', 'assignee'],
-  });
-  const items = Array.isArray(resp) ? resp : (resp.issues ?? resp.items ?? resp.data ?? []);
-  return { items, nextCursor: undefined as string | undefined };
-};
-for await (const it of client.paginate(fetchPage, { limit: 50, maxItems: 200 })) {
-  // process(it)
-}
+// Search by queue (exactly one of queue|keys|filter|query is allowed)
+await client1.searchIssuesByQueue('DEMKA', {
+  fields: ['key','summary','status','assignee'],
+  expand: 'attachments',
+  pagination: { perPage: 50 },
+});
 
-await client.uploadAttachment(issue.key!, Buffer.from('hello.txt contents'), { filename: 'hello.txt', mimeType: 'text/plain' });
-await client.addComment(issue.key!, { text: 'Attached a file' });
-await client.addWorklog(issue.key!, { duration: 'PT30M', comment: 'investigation' });
-// await client.transitionIssue(issue.key!, 'cancel');
+// Get issue
+const issue = await client1.getIssue('DEMKA-1', { fields: ['summary','status','assignee'] });
+console.log('Issue', issue.key, issue.summary);
 */
