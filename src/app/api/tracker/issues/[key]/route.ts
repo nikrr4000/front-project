@@ -41,11 +41,11 @@ export async function DELETE(
   _req: NextRequest,
   { params }: { params: { key: string } }
 ) {
-  try {
-    const client = getClient();
-    await client.deleteIssue(params.key);
-    return NextResponse.json({ ok: true });
-  } catch (e: any) {
-    return NextResponse.json({ error: e?.message || "Error" }, { status: 500 });
-  }
+  return NextResponse.json(
+    {
+      error:
+        "DELETE /v3/issues/{key} не поддерживается. Используйте transition (_execute).",
+    },
+    { status: 405 }
+  );
 }

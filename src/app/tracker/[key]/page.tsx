@@ -40,15 +40,9 @@ export default function IssuePage({ params }: { params: { key: string } }) {
   };
 
   const remove = async () => {
-    if (!confirm('Удалить задачу?')) return;
-    const res = await fetch(`/api/tracker/issues/${key}`, { method: 'DELETE' });
-    if (res.ok) {
-      alert('Удалено');
-      router.push('/tracker');
-    } else {
-      const data = await res.json();
-      alert(data.error || 'Error');
-    }
+    alert(
+      'DELETE /v3/issues/{key} не поддерживается. Используйте переход в завершающий статус.'
+    );
   };
 
   if (loading) return <div className="p-4">Загрузка...</div>;
