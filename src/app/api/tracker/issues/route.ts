@@ -11,17 +11,30 @@ function buildAuthHeaders() {
   const oauth = process.env.TRACKER_OAUTH_TOKEN;
   const org = process.env.TRACKER_ORG_ID;
 
-  if (iam && cloudOrg) {
-    headers["Authorization"] = `Bearer ${iam}`;
-    headers["X-Cloud-Org-ID"] = cloudOrg;
-  } else {
-    if (!oauth || !org) {
-      throw new Error("Missing TRACKER_OAUTH_TOKEN or TRACKER_ORG_ID envs");
+  if (iam) {
+    if (!cloudOrg) {
+      throw new Error("IAM требует TRACKER_CLOUD_ORG_ID");
     }
-    headers["Authorization"] = `OAuth ${oauth}`;
-    headers["X-Org-ID"] = org;
+    headers.Authorization = `Bearer ${iam}`;
+    headers["X-Cloud-Org-ID"] = cloudOrg;
+    return headers;
   }
-  return headers;
+
+  if (oauth) {
+    headers.Authorization = `OAuth ${oauth}`;
+    if (cloudOrg) {
+      headers["X-Cloud-Org-ID"] = cloudOrg;
+    } else if (org) {
+      headers["X-Org-ID"] = org;
+    } else {
+      throw new Error(
+        "Для OAuth укажи TRACKER_CLOUD_ORG_ID или TRACKER_ORG_ID"
+      );
+    }
+    return headers;
+  }
+
+  throw new Error("Нужен TRACKER_IAM_TOKEN или TRACKER_OAUTH_TOKEN");
 }
 
 export async function GET(req: NextRequest) {
