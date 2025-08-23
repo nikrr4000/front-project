@@ -478,8 +478,8 @@ export class TrackerClient {
   // ---------- Helpers ----------
   private orgHeaders(): Record<string, string> {
     const h: Record<string, string> = {};
-    if (this.orgId) h["X-Org-Id"] = String(this.orgId);
-    if (this.cloudOrgId) h["X-Cloud-Org-Id"] = String(this.cloudOrgId);
+    if (this.cloudOrgId) h["X-Cloud-Org-ID"] = String(this.cloudOrgId);
+    else if (this.orgId) h["X-Org-ID"] = String(this.orgId);
     return h;
   }
   private buildCacheKey(method: string, url: string, headers: Headers): string {
@@ -736,10 +736,8 @@ export class TrackerClient {
   }
   deleteIssue(issueKey: string): Promise<void> {
     assertString("issueKey", issueKey);
-    return this.request(
-      "DELETE",
-      `/v3/issues/${encodeURIComponent(issueKey)}`,
-      { expectStatus: [200, 204, 202] }
+    throw new Error(
+      "DELETE /v3/issues/{key} не поддерживается. Используйте transition (_execute)."
     );
   }
 
@@ -1116,5 +1114,5 @@ for await (const it of client.paginate(fetchPage, { limit: 50, maxItems: 200 }))
 await client.uploadAttachment(issue.key!, Buffer.from('hello.txt contents'), { filename: 'hello.txt', mimeType: 'text/plain' });
 await client.addComment(issue.key!, { text: 'Attached a file' });
 await client.addWorklog(issue.key!, { duration: 'PT30M', comment: 'investigation' });
-await client.deleteIssue(issue.key!);
+// await client.transitionIssue(issue.key!, 'cancel');
 */
